@@ -1,0 +1,9 @@
+.env
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+data/agents_reference.xlsx
+data/*.xlsx
+data/*.xls
