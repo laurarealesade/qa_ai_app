@@ -1,13 +1,12 @@
 """
-Orchestrator: checks for new ServiceNow emails, processes attachments,
-uploads aggregated data to OneDrive, and triggers a Power BI refresh.
+Orchestrator: watches the incoming OneDrive folder for new ServiceNow Excel files,
+processes each one, and writes the aggregated dashboard Excel to the output path.
 """
 import logging
 
-from src.config import ONEDRIVE_INCOMING_FOLDER, ONEDRIVE_OUTPUT_FILE
+from src.config import OUTPUT_FILE
 from src.data_processor import dataframe_to_excel_bytes, process_servicenow_excel
-from src.email_monitor import fetch_unprocessed_attachments
-from src.onedrive_client import upload_file
+from src.file_monitor import fetch_new_attachments
 from src.powerbi_client import trigger_dataset_refresh
 
 log = logging.getLogger(__name__)
@@ -17,7 +16,7 @@ def run_pipeline() -> None:
     log.info("=== Pipeline started ===")
     processed_count = 0
 
-    for filename, file_bytes in fetch_unprocessed_attachments():
+    for filename, file_bytes in fetch_new_attachments():
         log.info("Processing: %s", filename)
         try:
             dashboard_df = process_servicenow_excel(file_bytes)
@@ -25,20 +24,15 @@ def run_pipeline() -> None:
             log.error("Failed to process %s: %s", filename, exc)
             continue
 
-        # Archive the raw file on OneDrive
-        upload_file(f"{ONEDRIVE_INCOMING_FOLDER}/{filename}", file_bytes)
-
-        # Overwrite the master dashboard Excel with the latest aggregated data
-        dashboard_bytes = dataframe_to_excel_bytes(dashboard_df)
-        upload_file(ONEDRIVE_OUTPUT_FILE, dashboard_bytes)
-
+        OUTPUT_FILE.parent.mkdir(parents=True, exist_ok=True)
+        OUTPUT_FILE.write_bytes(dataframe_to_excel_bytes(dashboard_df))
         processed_count += 1
-        log.info("Dashboard updated — %d agents", len(dashboard_df))
+        log.info("Dashboard updated → %s (%d agents)", OUTPUT_FILE, len(dashboard_df))
 
     if processed_count:
         trigger_dataset_refresh()
         log.info("Pipeline complete — processed %d file(s)", processed_count)
     else:
-        log.info("No new ServiceNow emails found")
+        log.info("No new files to process")
 
     log.info("=== Pipeline finished ===")

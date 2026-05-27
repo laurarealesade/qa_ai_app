@@ -1,6 +1,5 @@
 """
-Validates that all connections are working before running the pipeline.
-Run this after filling in your .env file.
+Validates that the local setup is correct before running the pipeline.
 
     python validate_setup.py
 """
@@ -8,7 +7,6 @@ import sys
 import os
 from pathlib import Path
 
-# Allow running from project root
 sys.path.insert(0, str(Path(__file__).parent))
 
 PASS = "\033[92m✓\033[0m"
@@ -31,11 +29,8 @@ def main():
     print("\n=== ServiceNow → Power BI — Validación de configuración ===\n")
     ok = True
 
-    # ── 1. Environment variables ──────────────────────────────────────────────
+    # ── 1. .env variables ─────────────────────────────────────────────────────
     print("1. Variables de entorno (.env)")
-    required_vars = ["AZURE_TENANT_ID", "AZURE_CLIENT_ID", "AZURE_CLIENT_SECRET"]
-    optional_vars = ["POWERBI_WORKSPACE_ID", "POWERBI_DATASET_ID"]
-
     try:
         from dotenv import load_dotenv
         load_dotenv()
@@ -43,138 +38,84 @@ def main():
         print(f"  {FAIL} python-dotenv no instalado — corre: pip install -r requirements.txt")
         sys.exit(1)
 
-    for var in required_vars:
+    for var in ["INCOMING_FOLDER", "OUTPUT_FILE"]:
         val = os.getenv(var, "")
-        if val and val != f"xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" and "your-" not in val:
-            print(f"  {PASS} {var}")
+        if val:
+            print(f"  {PASS} {var} = {val}")
         else:
             print(f"  {FAIL} {var} — no configurado en .env")
             ok = False
 
-    for var in optional_vars:
-        val = os.getenv(var, "")
-        if val and "xxxx" not in val:
-            print(f"  {PASS} {var} (Power BI)")
-        else:
-            print(f"  {WARN} {var} — no configurado (refresh automático desactivado)")
+    # ── 2. Carpetas ───────────────────────────────────────────────────────────
+    print("\n2. Carpetas en OneDrive")
+    def check_incoming():
+        from src.config import INCOMING_FOLDER, PROCESSED_FOLDER
+        INCOMING_FOLDER.mkdir(parents=True, exist_ok=True)
+        PROCESSED_FOLDER.mkdir(parents=True, exist_ok=True)
+        xlsx_count = len(list(INCOMING_FOLDER.glob("*.xlsx")))
+        return f"creada — {xlsx_count} archivo(s) Excel pendientes"
+    ok &= check("Carpeta incoming", check_incoming)
 
-    # ── 2. Agents reference file ──────────────────────────────────────────────
-    print("\n2. Archivo de referencia de agentes")
-    def check_agents_file():
+    def check_output_dir():
+        from src.config import OUTPUT_FILE
+        OUTPUT_FILE.parent.mkdir(parents=True, exist_ok=True)
+        return str(OUTPUT_FILE.parent)
+    ok &= check("Carpeta de salida", check_output_dir)
+
+    # ── 3. Archivo de agentes ─────────────────────────────────────────────────
+    print("\n3. Tabla de referencia de agentes")
+    def check_agents():
         import pandas as pd
-        path = Path("data/agents_reference.xlsx")
-        if not path.exists():
-            raise FileNotFoundError("data/agents_reference.xlsx no existe")
-        df = pd.read_excel(path)
-        required_cols = {"Agent_ID", "Agent_Name", "Activity"}
-        missing = required_cols - set(df.columns)
+        from src.config import AGENTS_REFERENCE_FILE
+        if not AGENTS_REFERENCE_FILE.exists():
+            raise FileNotFoundError(f"{AGENTS_REFERENCE_FILE} no existe")
+        df = pd.read_excel(AGENTS_REFERENCE_FILE)
+        missing = {"Agent_ID", "Agent_Name", "Activity"} - set(df.columns)
         if missing:
             raise ValueError(f"Columnas faltantes: {missing}")
-        return f"{len(df)} agentes, actividades: {sorted(df['Activity'].unique().tolist())}"
+        counts = df.groupby("Activity")["Agent_Name"].count().to_dict()
+        return f"{len(df)} agentes — {counts}"
+    ok &= check("agents_reference.xlsx", check_agents)
 
-    ok &= check("data/agents_reference.xlsx", check_agents_file)
+    # ── 4. Dependencias Python ────────────────────────────────────────────────
+    print("\n4. Dependencias Python")
+    for lib in ["pandas", "openpyxl", "schedule"]:
+        def _check(l=lib):
+            __import__(l)
+            import importlib.metadata
+            return importlib.metadata.version(l)
+        ok &= check(lib, _check)
 
-    # ── 3. Azure AD authentication ────────────────────────────────────────────
-    print("\n3. Autenticación Azure AD (MSAL)")
-    def check_msal():
-        import msal
-        return "módulo disponible"
-    ok &= check("msal instalado", check_msal)
-
-    def check_graph_token():
-        from src.auth import get_graph_token
-        token = get_graph_token()
-        return f"token obtenido ({len(token)} chars)"
-    ok &= check("Token de Microsoft Graph", check_graph_token)
-
-    # ── 4. Microsoft Graph — Mailbox access ───────────────────────────────────
-    print("\n4. Acceso al buzón de correo (Graph API)")
-    def check_mailbox():
-        import requests
-        from src.auth import get_graph_token
-        resp = requests.get(
-            "https://graph.microsoft.com/v1.0/me/mailFolders/inbox",
-            headers={"Authorization": f"Bearer {get_graph_token()}"},
-        )
-        if resp.status_code == 200:
-            count = resp.json().get("totalItemCount", "?")
-            return f"inbox accesible ({count} mensajes)"
-        raise RuntimeError(f"HTTP {resp.status_code}: {resp.json().get('error', {}).get('message', resp.text)}")
-    ok &= check("Leer inbox (Mail.Read)", check_mailbox)
-
-    # ── 5. OneDrive access ────────────────────────────────────────────────────
-    print("\n5. Acceso a OneDrive (Graph API)")
-    def check_onedrive():
-        import requests
-        from src.auth import get_graph_token
-        resp = requests.get(
-            "https://graph.microsoft.com/v1.0/me/drive/root",
-            headers={"Authorization": f"Bearer {get_graph_token()}"},
-        )
-        if resp.status_code == 200:
-            name = resp.json().get("name", "OneDrive")
-            quota = resp.json().get("quota", {})
-            used_gb = round(quota.get("used", 0) / 1e9, 2)
-            return f"'{name}' — {used_gb} GB usados"
-        raise RuntimeError(f"HTTP {resp.status_code}: {resp.json().get('error', {}).get('message', resp.text)}")
-    ok &= check("OneDrive raíz (Files.ReadWrite)", check_onedrive)
-
-    def check_onedrive_write():
-        import requests
-        from src.auth import get_graph_token
-        test_content = b"test"
-        resp = requests.put(
-            "https://graph.microsoft.com/v1.0/me/drive/root:/servicenow-reports/.test:/content",
-            headers={
-                "Authorization": f"Bearer {get_graph_token()}",
-                "Content-Type": "application/octet-stream",
-            },
-            data=test_content,
-        )
-        if resp.status_code in (200, 201):
-            # Clean up test file
-            item_id = resp.json()["id"]
-            requests.delete(
-                f"https://graph.microsoft.com/v1.0/me/drive/items/{item_id}",
-                headers={"Authorization": f"Bearer {get_graph_token()}"},
-            )
-            return "escritura y borrado OK"
-        raise RuntimeError(f"HTTP {resp.status_code}: {resp.json().get('error', {}).get('message', resp.text)}")
-    ok &= check("Escritura en OneDrive", check_onedrive_write)
-
-    # ── 6. Power BI (optional) ────────────────────────────────────────────────
+    # ── 5. Power BI (opcional) ────────────────────────────────────────────────
     pbi_ws = os.getenv("POWERBI_WORKSPACE_ID", "")
-    pbi_ds = os.getenv("POWERBI_DATASET_ID", "")
-    if pbi_ws and pbi_ds and "xxxx" not in pbi_ws:
-        print("\n6. Power BI Service")
-        def check_powerbi_token():
-            from src.auth import get_powerbi_token
-            token = get_powerbi_token()
-            return f"token obtenido ({len(token)} chars)"
-        ok &= check("Token de Power BI", check_powerbi_token)
-
-        def check_powerbi_dataset():
-            import requests
-            from src.auth import get_powerbi_token
-            resp = requests.get(
-                f"https://api.powerbi.com/v1.0/myorg/groups/{pbi_ws}/datasets/{pbi_ds}",
-                headers={"Authorization": f"Bearer {get_powerbi_token()}"},
+    if pbi_ws:
+        print("\n5. Power BI auto-refresh")
+        def check_pbi():
+            import msal
+            from src.config import POWERBI_CLIENT_ID, POWERBI_CLIENT_SECRET, POWERBI_TENANT_ID
+            if not all([POWERBI_CLIENT_ID, POWERBI_CLIENT_SECRET, POWERBI_TENANT_ID]):
+                raise ValueError("Faltan POWERBI_CLIENT_ID, CLIENT_SECRET o TENANT_ID")
+            app = msal.ConfidentialClientApplication(
+                client_id=POWERBI_CLIENT_ID,
+                client_credential=POWERBI_CLIENT_SECRET,
+                authority=f"https://login.microsoftonline.com/{POWERBI_TENANT_ID}",
             )
-            if resp.status_code == 200:
-                name = resp.json().get("name", "dataset")
-                return f"dataset '{name}' encontrado"
-            raise RuntimeError(f"HTTP {resp.status_code}: {resp.json().get('error', {}).get('message', resp.text)}")
-        ok &= check("Dataset de Power BI", check_powerbi_dataset)
+            result = app.acquire_token_for_client(
+                scopes=["https://analysis.windows.net/powerbi/api/.default"]
+            )
+            if "access_token" not in result:
+                raise RuntimeError(result.get("error_description"))
+            return "token obtenido"
+        ok &= check("Power BI token", check_pbi)
     else:
-        print(f"\n6. Power BI Service — {WARN} omitido (IDs no configurados)")
+        print(f"\n5. Power BI auto-refresh — {WARN} omitido (usa el refresh programado de Power BI Service)")
 
-    # ── Summary ───────────────────────────────────────────────────────────────
+    # ── Resumen ───────────────────────────────────────────────────────────────
     print()
     if ok:
-        print(f"{PASS} Todo listo. Puedes ejecutar: python run.py")
+        print(f"{PASS} Todo listo. Ejecuta: python run.py")
     else:
-        print(f"{FAIL} Hay errores que resolver antes de ejecutar el pipeline.")
-        print("   Revisa el README.md para instrucciones de configuración.")
+        print(f"{FAIL} Hay errores. Revisa los puntos marcados arriba.")
     print()
 
 
