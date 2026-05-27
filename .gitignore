@@ -4,6 +4,6 @@ __pycache__/
 *.pyo
 .venv/
 venv/
-data/agents_reference.xlsx
-data/*.xlsx
-data/*.xls
+# Keep agents_reference.xlsx in git — it's configuration, not sensitive data
+data/incoming/
+data/*.tmp

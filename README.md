@@ -51,21 +51,13 @@ cp .env.example .env
 
 Llena los valores en `.env` con tus IDs reales.
 
-### 4. Crear la tabla de referencia de agentes
+### 4. Tabla de referencia de agentes
 
-```bash
-python create_agents_template.py
-```
+El archivo `data/agents_reference.xlsx` ya contiene los 50 agentes del equipo (24 Online, 10 Offline, 13 7Eleven, 2 Sr Analyst, 1 Team Leader).
 
-Abre `data/agents_reference.xlsx` y reemplaza los datos de ejemplo con tus agentes reales:
+Para agregar o modificar agentes, edita directamente ese archivo. El `Agent_ID` (columna A) debe coincidir exactamente con el valor que llega en la columna `Value` del Excel de ServiceNow.
 
-| Agent_ID | Agent_Name | Activity |
-|---|---|---|
-| AG001 | Juan Pérez | Online |
-| AG002 | María López | Offline |
-| AG003 | Carlos García | 7Eleven |
-
-> `Agent_ID` debe coincidir exactamente con el valor en la columna `Value` del Excel de ServiceNow.
+> **Nota:** Team Leader y Sr Analyst aparecerán en el dashboard con esas etiquetas. Si solo quieres ver Online / Offline / 7Eleven, filtra la columna `Activity` en Power BI al diseñar el visual.
 
 ### 5. Conectar Power BI al Excel de OneDrive
 
